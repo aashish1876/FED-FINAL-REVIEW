@@ -7,6 +7,11 @@ import { getSheetStore } from './sheets.js';
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
+app.get('/api/health', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ ok: true });
+});
+
 const captchaAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 function createCaptchaImage(code) {

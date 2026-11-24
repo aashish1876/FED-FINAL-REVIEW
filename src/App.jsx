@@ -4,19 +4,46 @@ const TOKEN_KEY = 'feedback_session_token';
 const MIGRATED_KEY = 'feedback_sheet_migration_complete';
 const THEME_KEY = 'feedback_theme_preference';
 
-async function apiRequest(path, { method = 'GET', body, token = localStorage.getItem(TOKEN_KEY) } = {}) {
-  const response = await fetch(`/api/${path}`, {
-    method,
-    headers: {
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  if (response.status === 204) return null;
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || 'The request could not be completed.');
-  return result;
+async function apiRequest(path, { method = 'GET', body, token = localStorage.getItem(TOKEN_KEY), timeoutMs = 15000 } = {}) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`/api/${path}`, {
+      method,
+      headers: {
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: controller.signal,
+    });
+    if (response.status === 204) return null;
+    const responseText = await response.text();
+    let result;
+    try {
+      result = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      const detail = responseText.trim().replace(/\s+/g, ' ').slice(0, 180);
+      const error = new Error(
+        `The API returned an invalid response (HTTP ${response.status})${detail ? `: ${detail}` : '.'}`,
+      );
+      error.status = response.status;
+      throw error;
+    }
+    if (!response.ok) {
+      const error = new Error(result.error || 'The request could not be completed.');
+      error.status = response.status;
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error('The API did not respond in time. Check the Vercel function logs and environment variables.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function legacyData(key) {
@@ -86,6 +113,7 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    setReady(true);
     async function initialize() {
       try {
         const result = await apiRequest('feedback', { token: '' });
@@ -111,8 +139,9 @@ export default function App() {
             setFeedback(result.feedback);
             setView(session.user.role === 'admin' ? 'admin' : 'user');
           }
-        } catch {
-          localStorage.removeItem(TOKEN_KEY);
+        } catch (error) {
+          if (error.status === 401) localStorage.removeItem(TOKEN_KEY);
+          else if (active) setApiError(error.message);
         }
       }
       if (active) setReady(true);
@@ -178,7 +207,7 @@ export default function App() {
     };
     setFeedback((items) => [pendingFeedback, ...items]);
     try {
-      const result = await apiRequest('feedback', { method: 'POST', body: item });
+      const result = await apiRequest('feedback', { method: 'POST', body: item, timeoutMs: 30000 });
       setFeedback((items) => items.map((entry) => entry.id === pendingId ? result.feedback : entry));
     } catch (error) {
       setFeedback((items) => items.filter((entry) => entry.id !== pendingId));

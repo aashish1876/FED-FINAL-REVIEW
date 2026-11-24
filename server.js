@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import app from './api/app.js';
+import app from './server/app.js';
 
 const port = Number(process.env.API_PORT || 3001);
 
