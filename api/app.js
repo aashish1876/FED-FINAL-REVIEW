@@ -1,11 +1,71 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { getSheetStore } from './sheets.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+
+const captchaAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function createCaptchaImage(code) {
+  const chars = [...code].map((char, index) => {
+    const x = 24 + index * 31;
+    const y = 38 + (index % 2 ? 5 : -2);
+    const rotate = (index * 13 % 25) - 12;
+    return `<text x="${x}" y="${y}" transform="rotate(${rotate} ${x} ${y})">${char}</text>`;
+  }).join('');
+  const lines = Array.from({ length: 7 }, (_, index) => {
+    const x1 = (index * 37 + 9) % 180;
+    const y1 = (index * 17 + 8) % 56;
+    const x2 = (index * 61 + 31) % 180;
+    const y2 = (index * 29 + 19) % 56;
+    return `<path d="M${x1} ${y1} Q90 ${y2} ${x2} ${56 - y1}"/>`;
+  }).join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="180" height="56" viewBox="0 0 180 56" role="img" aria-label="CAPTCHA characters"><rect width="180" height="56" rx="6" fill="#edf1ef"/><g fill="none" stroke="#98a8a5" stroke-width="1.2" opacity=".8">${lines}</g><g fill="#183446" font-family="monospace" font-size="29" font-weight="700" letter-spacing="2">${chars}</g></svg>`;
+}
+
+function captchaKey() {
+  return createHash('sha256').update(jwtSecret()).digest();
+}
+
+function createCaptchaToken(answer) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', captchaKey(), iv);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify({ answer, expiresAt: Date.now() + 5 * 60 * 1000 }), 'utf8'),
+    cipher.final(),
+  ]);
+  return [iv, cipher.getAuthTag(), encrypted].map((part) => part.toString('base64url')).join('.');
+}
+
+function verifyCaptcha(token, answer) {
+  if (typeof token !== 'string' || token.length > 1024 || typeof answer !== 'string') return false;
+  const [ivPart, tagPart, encryptedPart] = token.split('.');
+  if (!ivPart || !tagPart || !encryptedPart) return false;
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', captchaKey(), Buffer.from(ivPart, 'base64url'));
+    decipher.setAuthTag(Buffer.from(tagPart, 'base64url'));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(encryptedPart, 'base64url')),
+      decipher.final(),
+    ]).toString('utf8');
+    const challenge = JSON.parse(plaintext);
+    if (challenge.expiresAt < Date.now()) return false;
+    const expected = Buffer.from(String(challenge.answer || ''));
+    const actual = Buffer.from(answer.trim().toUpperCase());
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  } catch {
+    return false;
+  }
+}
+
+app.get('/api/captcha', (req, res) => {
+  const answer = Array.from({ length: 5 }, () => captchaAlphabet[randomBytes(1)[0] % captchaAlphabet.length]).join('');
+  res.set('Cache-Control', 'no-store');
+  res.json({ id: createCaptchaToken(answer), image: createCaptchaImage(answer) });
+});
 
 function sendError(res, error) {
   console.error(error);
@@ -108,6 +168,9 @@ app.get('/api/session', async (req, res) => {
 
 app.post('/api/auth/signup', async (req, res) => {
   try {
+    if (!verifyCaptcha(req.body.captchaId, req.body.captchaAnswer)) {
+      return res.status(400).json({ error: 'CAPTCHA is incorrect or expired. Please try a new image.' });
+    }
     const name = String(req.body.name || '').trim();
     const email = String(req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
@@ -136,6 +199,9 @@ app.post('/api/auth/signup', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   try {
+    if (!verifyCaptcha(req.body.captchaId, req.body.captchaAnswer)) {
+      return res.status(400).json({ error: 'CAPTCHA is incorrect or expired. Please try a new image.' });
+    }
     const email = String(req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
     const store = await getSheetStore();
@@ -237,7 +303,7 @@ app.get('/api/feedback', async (req, res) => {
     const rows = await store.list('Feedback');
     const header = req.headers.authorization || '';
     if (!header.startsWith('Bearer ')) {
-      const publicItems = rows.map(({ record }) => ({ ...record, rating: Number(record.rating) })).filter((item) => item.status === 'Resolved');
+      const publicItems = rows.map(({ record }) => ({ ...record, rating: Number(record.rating) }));
       return res.json({ feedback: publicItems });
     }
 

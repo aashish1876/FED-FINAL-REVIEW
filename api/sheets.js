@@ -1,9 +1,14 @@
 import { google } from 'googleapis';
+import { createPrivateKey } from 'node:crypto';
 
 const TABLES = {
   Users: ['id', 'name', 'email', 'passwordHash', 'role', 'createdAt'],
   Feedback: ['id', 'userId', 'userName', 'category', 'rating', 'message', 'status', 'createdAt'],
 };
+
+let cachedClientIdentity = '';
+let cachedClient = null;
+let tablesReadyPromise = null;
 
 function getClient() {
   const spreadsheetId = process.env.GOOGLE_SHEET_ID;
@@ -13,6 +18,9 @@ function getClient() {
     error.status = 503;
     throw error;
   }
+
+  const identity = `${spreadsheetId}\n${serviceAccountJson}`;
+  if (cachedClient && identity === cachedClientIdentity) return cachedClient;
 
   let credentials;
   try {
@@ -25,12 +33,22 @@ function getClient() {
   if (typeof credentials.private_key === 'string') {
     credentials.private_key = credentials.private_key.replace(/\\n/g, '\n');
   }
+  try {
+    createPrivateKey(credentials.private_key);
+  } catch {
+    const error = new Error('GOOGLE_SERVICE_ACCOUNT_JSON contains an invalid private_key. Download a fresh service account JSON key from Google Cloud and update the local .env file.');
+    error.status = 503;
+    throw error;
+  }
 
   const auth = new google.auth.GoogleAuth({
     credentials,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
-  return { sheets: google.sheets({ version: 'v4', auth }), spreadsheetId };
+  cachedClient = { sheets: google.sheets({ version: 'v4', auth }), spreadsheetId };
+  cachedClientIdentity = identity;
+  tablesReadyPromise = null;
+  return cachedClient;
 }
 
 async function ensureTables(sheets, spreadsheetId) {
@@ -65,7 +83,17 @@ async function ensureTables(sheets, spreadsheetId) {
 
 export async function getSheetStore() {
   const { sheets, spreadsheetId } = getClient();
-  await ensureTables(sheets, spreadsheetId);
+  if (!tablesReadyPromise) {
+    tablesReadyPromise = ensureTables(sheets, spreadsheetId);
+    try {
+      await tablesReadyPromise;
+    } catch (error) {
+      tablesReadyPromise = null;
+      throw error;
+    }
+  } else {
+    await tablesReadyPromise;
+  }
   return {
     async list(table) {
       const result = await sheets.spreadsheets.values.get({
