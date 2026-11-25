@@ -2,6 +2,14 @@
 
 FeedbackHub is a responsive customer feedback app built with React, Vite, and Express. Google Sheets stores account and feedback data, so authorized users can access the same records from the local app or a deployed instance.
 
+## Team
+
+| Student ID | Name |
+| --- | --- |
+| 2500090127 | P M Kumar |
+| 2500090212 | Pulluri Rugved |
+| 2500090213 | Matta Venkata Aashish Kumar Yadav |
+
 ## Features
 
 - Image-based character CAPTCHA on sign-up and sign-in. The server validates encrypted challenges that expire after five minutes.
