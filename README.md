@@ -23,7 +23,7 @@ FeedbackHub is a responsive customer feedback app built with React, Vite, and Ex
 
 ## Google Sheets database
 
-The API creates the required tabs in the configured spreadsheet:
+The API creates the required tabs in the configured spreadsheet :
 
 | Tab | Stored fields |
 | --- | --- |
