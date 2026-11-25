@@ -291,9 +291,10 @@ footer > span { color: var(--ink); font-weight: 700; }
 .chat-panel { display:flex; flex-direction:column; width:min(390px,calc(100vw - 32px)); max-height:min(620px,calc(100vh - 105px)); overflow:hidden; border:1px solid var(--glass-border); border-radius:22px; color:var(--ink); background:var(--glass-strong); backdrop-filter:blur(24px) saturate(140%); box-shadow:var(--shadow); animation:chat-enter .24s ease-out both; }
 @keyframes chat-enter { from { opacity:0; transform:translateY(12px) scale(.98); } to { opacity:1; transform:translateY(0) scale(1); } }
 .chat-panel-head { display:flex; align-items:center; justify-content:space-between; padding:15px 17px; border-bottom:1px solid var(--line); }
-.chat-panel-actions { display:flex; align-items:center; gap:8px; }.chat-new-request { min-height:32px; padding:0 10px; border:1px solid var(--line); border-radius:10px; color:var(--brand); background:var(--input); font-size:12px; font-weight:700; }.chat-new-request:hover:not(:disabled) { border-color:var(--brand); background:var(--green-bg); }.chat-new-request:disabled { opacity:.55; cursor:default; }
-.chat-panel-head div { display:grid; gap:3px; }.chat-panel-head small,.chat-bubble>span,.chat-typing { color:var(--muted); font-size:12px; }
-.chat-panel-head button { width:32px;height:32px;border:0;border-radius:10px;color:var(--muted);background:var(--input);font-size:22px; }
+.chat-panel-head > div:first-child { display:grid; flex:1; min-width:0; gap:3px; }
+.chat-panel-actions { display:flex; flex:0 0 auto; align-items:center; gap:8px; }.chat-new-request { width:auto; min-height:32px; padding:0 10px; border:1px solid var(--line); border-radius:10px; color:var(--brand); background:var(--input); font-size:12px; font-weight:700; white-space:nowrap; }.chat-new-request:hover:not(:disabled) { border-color:var(--brand); background:var(--green-bg); }.chat-new-request:disabled { opacity:.55; cursor:default; }
+.chat-panel-head small,.chat-bubble>span,.chat-typing { color:var(--muted); font-size:12px; }
+.chat-panel-actions > button[aria-label="Close chat"] { flex:0 0 32px; width:32px; height:32px; border:0; border-radius:10px; color:var(--muted); background:var(--input); font-size:22px; }
 .chat-messages { display:flex; flex-direction:column; gap:11px; min-height:120px; padding:15px; overflow:auto; }
 .chat-bubble { max-width:88%; padding:10px 12px; border:1px solid var(--line); border-radius:15px; background:var(--input); }
 .chat-bubble p { margin:5px 0 0; white-space:pre-wrap; line-height:1.5; font-size:13px; }
