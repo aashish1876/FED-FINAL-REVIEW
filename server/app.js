@@ -90,7 +90,7 @@ app.post('/api/assistant/chat', assistantRateLimit, async (req, res) => {
     const response = await fetch(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: process.env.AI_MODEL || 'gemini-3.8-flash', messages: [system, ...messages], max_tokens: 350, temperature: 0.35, stream: false }),
+      body: JSON.stringify({ model: process.env.AI_MODEL || 'gemini-3.5-flash-lite', messages: [system, ...messages], max_tokens: 350, temperature: 0.35, stream: false }),
       signal: controller.signal,
     });
     if (!response.ok) {

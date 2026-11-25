@@ -39,7 +39,7 @@ Passwords are never stored as readable text. The API connects to Sheets with a G
 
 The API creates the `Users`, `Feedback`, and `Support` tabs and their headers the first time it connects. Keep `.env` and downloaded service account keys out of GitHub.
 
-For local FreeLLMAPI testing, set `BASE_URL=http://127.0.0.1:31415` and use the model ID `auto`. For deployment with Gemini, set `BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`, use `AI_MODEL=gemini-3.8-flash`, and set `AI_API_KEY` to the Gemini API key in the hosting provider's private environment variables.
+For local FreeLLMAPI testing, set `BASE_URL=http://127.0.0.1:31415` and use the model ID `auto`. For deployment with Gemini, set `BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`, use `AI_MODEL=gemini-3.5-flash-lite`, and set `AI_API_KEY` to the Gemini API key in the hosting provider's private environment variables.
 
 ## Run locally
 

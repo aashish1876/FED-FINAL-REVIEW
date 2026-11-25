@@ -267,6 +267,11 @@ export default function App() {
     return result.tickets;
   }
 
+  function startNewSupportRequest() {
+    setChatMessages([{ role: 'assistant', content: 'Hi! Tell me what happened, or ask me how FeedbackHub works. I can connect you with a person if you need more help.' }]);
+    setChatFlow({ stage: 'idle', issue: '' });
+  }
+
   useEffect(() => {
     if (!currentUser || !['admin', 'user'].includes(currentUser.role) || !['admin', 'user'].includes(view)) return undefined;
     let active = true;
@@ -306,7 +311,7 @@ export default function App() {
   }
 
   if (currentUser?.role === 'user' && view === 'user') {
-    return <><UserDashboard user={currentUser} feedback={feedback} onSubmitFeedback={submitFeedback} supportTickets={supportTickets} onRefreshSupport={refreshSupport} onLogout={logout} apiError={apiError} theme={theme} onToggleTheme={toggleTheme} /><ChatWidget user={currentUser} messages={chatMessages} flow={chatFlow} onFlowChange={setChatFlow} loading={chatLoading} onSend={sendChat} onSetMessages={setChatMessages} onHandoff={handoffChat} onSendSupportMessage={sendSupportMessage} supportTickets={supportTickets} onRefreshSupport={refreshSupport} /></>;
+    return <><UserDashboard user={currentUser} feedback={feedback} onSubmitFeedback={submitFeedback} supportTickets={supportTickets} onRefreshSupport={refreshSupport} onLogout={logout} apiError={apiError} theme={theme} onToggleTheme={toggleTheme} /><ChatWidget user={currentUser} messages={chatMessages} flow={chatFlow} onFlowChange={setChatFlow} onNewRequest={startNewSupportRequest} loading={chatLoading} onSend={sendChat} onSetMessages={setChatMessages} onHandoff={handoffChat} onSendSupportMessage={sendSupportMessage} supportTickets={supportTickets} onRefreshSupport={refreshSupport} /></>;
   }
 
   if (!ready) return <div className="loading-screen">Connecting to FeedbackHub...</div>;
@@ -375,7 +380,7 @@ export default function App() {
       </main>
       <footer><span>FeedbackHub</span><small>© 2026 Feedback Management System</small></footer>
     </div>
-    <ChatWidget user={currentUser} messages={chatMessages} flow={chatFlow} onFlowChange={setChatFlow} loading={chatLoading} onSend={sendChat} onSetMessages={setChatMessages} onHandoff={handoffChat} onSendSupportMessage={sendSupportMessage} supportTickets={supportTickets} onRefreshSupport={refreshSupport} onNavigate={setView} />
+    <ChatWidget user={currentUser} messages={chatMessages} flow={chatFlow} onFlowChange={setChatFlow} onNewRequest={startNewSupportRequest} loading={chatLoading} onSend={sendChat} onSetMessages={setChatMessages} onHandoff={handoffChat} onSendSupportMessage={sendSupportMessage} supportTickets={supportTickets} onRefreshSupport={refreshSupport} onNavigate={setView} />
     </>
   );
 }
@@ -613,7 +618,12 @@ function UserDashboard({ user, feedback, onSubmitFeedback, supportTickets, onRef
       </div>
       <section className="content-card support-status-card glass-hover scroll-reveal">
         <div className="card-heading"><div><h2>Human support</h2><p>Private replies to your support requests appear here.</p></div><button className="button button-ghost" onClick={onRefreshSupport}>Refresh</button></div>
-        {supportTickets.length ? <div className="support-ticket-list">{supportTickets.map((ticket) => <article key={ticket.id}><div className="support-ticket-heading"><strong>{ticket.status}</strong><small>{new Date(ticket.createdAt).toLocaleString()}</small></div><p>{ticket.adminReply || 'Your request is with the support team. We will reply here.'}</p></article>)}</div> : <div className="empty-state"><strong>No human support requests</strong><p>Use the chat button if you need to speak with a person.</p></div>}
+        {supportTickets.length ? <div className="support-ticket-list">{supportTickets.map((ticket) => <article key={ticket.id}>
+          <div className="support-ticket-heading"><strong>{ticket.status}</strong><small>{new Date(ticket.createdAt).toLocaleString()}</small></div>
+          <div className="support-issue"><strong>Issue</strong><p>{ticket.issue || 'Issue details are in the conversation below.'}</p></div>
+          <p>{ticket.adminReply || 'Your request is with the support team. We will reply here.'}</p>
+          <details className="user-support-history"><summary>View conversation</summary><div className="support-transcript">{ticket.conversation.map((message, index) => <p key={`${ticket.id}-${index}`}><strong>{message.role === 'user' ? 'You' : message.role === 'human' ? 'Support team' : 'Assistant'}:</strong> {message.content}</p>)}</div></details>
+        </article>)}</div> : <div className="empty-state"><strong>No human support requests</strong><p>Use the chat button if you need to speak with a person.</p></div>}
       </section>
     </DashboardShell>
   );
@@ -653,15 +663,33 @@ function AdminSupportPanel({ tickets, onUpdate, onSendMessage, onRefresh }) {
   </section>;
 }
 
-function ChatWidget({ user, messages, flow, onFlowChange, loading, onSend, onSetMessages, onHandoff, onSendSupportMessage, supportTickets, onRefreshSupport, onNavigate }) {
+function ChatWidget({ user, messages, flow, onFlowChange, onNewRequest, loading, onSend, onSetMessages, onHandoff, onSendSupportMessage, supportTickets, onRefreshSupport, onNavigate }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [tickets, setTickets] = useState(supportTickets || []);
-  useEffect(() => { setTickets(supportTickets || []); }, [supportTickets]);
-  const activeTicket = user ? tickets[0] : null;
+  const [selectedTicketId, setSelectedTicketId] = useState(() => supportTickets?.[0]?.id || '');
+  const [viewingNewRequest, setViewingNewRequest] = useState(false);
+  useEffect(() => {
+    const available = supportTickets || [];
+    setTickets(available);
+    if (!viewingNewRequest && (!selectedTicketId || !available.some((ticket) => ticket.id === selectedTicketId))) {
+      setSelectedTicketId(available[0]?.id || '');
+    }
+  }, [supportTickets, selectedTicketId, viewingNewRequest]);
+  const activeTicket = user && !viewingNewRequest ? tickets.find((ticket) => ticket.id === selectedTicketId) : null;
   const transcript = activeTicket?.conversation || messages;
+
+  function startNewRequest() {
+    if (loading || busy) return;
+    setViewingNewRequest(true);
+    setSelectedTicketId('');
+    setDraft('');
+    setNotice('Started a new conversation. Previous support requests remain in your account history.');
+    onNewRequest?.();
+    setOpen(true);
+  }
 
   async function createHandoff(nextMessages = messages) {
     if (flow.stage !== 'consent' || flow.issue.trim().length < 5) {
@@ -682,7 +710,9 @@ function ChatWidget({ user, messages, flow, onFlowChange, loading, onSend, onSet
     }
     setBusy(true); setNotice('');
     try {
-      await onHandoff(nextMessages, flow.issue);
+      const ticket = await onHandoff(nextMessages, flow.issue);
+      setViewingNewRequest(false);
+      setSelectedTicketId(ticket.id);
       setNotice('Your issue was sent to human support. Continue the conversation here.');
       onFlowChange({ stage: 'thread', issue: flow.issue });
     } catch (error) { setNotice(error.message); }
@@ -739,7 +769,7 @@ function ChatWidget({ user, messages, flow, onFlowChange, loading, onSend, onSet
   }
   return <div className={`chat-widget ${open ? 'chat-widget-open' : ''}`}>
     {open && <section className="chat-panel glass-hover" aria-label="FeedbackHub assistant">
-      <header className="chat-panel-head"><div><strong>{activeTicket ? 'Human support' : 'FeedbackHub assistant'}</strong><small>{activeTicket ? 'Private conversation · Saved in Support sheet' : 'AI support · Private chat'}</small></div><button type="button" onClick={() => setOpen(false)} aria-label="Close chat">×</button></header>
+      <header className="chat-panel-head"><div><strong>{activeTicket ? 'Human support' : 'FeedbackHub assistant'}</strong><small>{activeTicket ? 'Private conversation · Saved in Support sheet' : 'AI support · Private chat'}</small></div><div className="chat-panel-actions">{user && <button className="chat-new-request" type="button" onClick={startNewRequest} disabled={loading || busy}>＋ New request</button>}<button type="button" onClick={() => setOpen(false)} aria-label="Close chat">×</button></div></header>
       <div className="chat-messages" aria-live="polite">{transcript.map((message, index) => <div className={`chat-bubble chat-${message.role}`} key={`${index}-${message.content.slice(0, 10)}`}><span>{message.role === 'user' ? 'You' : message.role === 'human' ? 'Support team' : 'Assistant'}</span><p>{message.content}</p></div>)}{loading && <div className="chat-typing">Assistant is replying…</div>}{busy && activeTicket && <div className="chat-typing">Saving to your support conversation…</div>}</div>
       {activeTicket && <div className="chat-ticket-summary"><strong>Support request:</strong> {activeTicket.status} <button type="button" onClick={refreshTickets}>Refresh</button></div>}
       {notice && <p className="chat-notice" role="status">{notice}{!user && <button type="button" onClick={() => onNavigate?.('login')}>Sign in</button>}</p>}
