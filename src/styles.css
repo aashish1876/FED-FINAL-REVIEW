@@ -290,11 +290,16 @@ footer > span { color: var(--ink); font-weight: 700; }
 .chat-launcher > span:first-child { display:grid; place-items:center; width:25px; height:25px; border-radius:50%; background:rgba(255,255,255,.18); font-size:19px; }
 .chat-panel { display:flex; flex-direction:column; width:min(390px,calc(100vw - 32px)); max-height:min(620px,calc(100vh - 105px)); overflow:hidden; border:1px solid var(--glass-border); border-radius:22px; color:var(--ink); background:var(--glass-strong); backdrop-filter:blur(24px) saturate(140%); box-shadow:var(--shadow); animation:chat-enter .24s ease-out both; }
 @keyframes chat-enter { from { opacity:0; transform:translateY(12px) scale(.98); } to { opacity:1; transform:translateY(0) scale(1); } }
-.chat-panel-head { display:flex; align-items:center; justify-content:space-between; padding:15px 17px; border-bottom:1px solid var(--line); }
-.chat-panel-head > div:first-child { display:grid; flex:1; min-width:0; gap:3px; }
-.chat-panel-actions { display:flex; flex:0 0 auto; align-items:center; gap:8px; }.chat-new-request { width:auto; min-height:32px; padding:0 10px; border:1px solid var(--line); border-radius:10px; color:var(--brand); background:var(--input); font-size:12px; font-weight:700; white-space:nowrap; }.chat-new-request:hover:not(:disabled) { border-color:var(--brand); background:var(--green-bg); }.chat-new-request:disabled { opacity:.55; cursor:default; }
+.chat-panel-head { display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:center; gap:12px; padding:15px 17px; border-bottom:1px solid var(--line); }
+.chat-panel-title { display:grid; min-width:0; gap:3px; }
+.chat-panel-title strong { overflow-wrap:anywhere; }
+.chat-panel-actions { display:flex; flex:0 0 auto; align-items:center; justify-content:flex-end; gap:8px; }
+.chat-new-request { display:inline-flex; flex:0 0 auto; align-items:center; justify-content:center; gap:5px; width:max-content; min-height:34px; padding:0 10px; border:1px solid var(--line); border-radius:10px; color:var(--brand); background:var(--input); font-size:12px; font-weight:700; white-space:nowrap; }
+.chat-new-request > span:first-child { font-size:16px; line-height:1; }
+.chat-new-request:hover:not(:disabled) { border-color:var(--brand); background:var(--green-bg); }
+.chat-new-request:disabled { opacity:.55; cursor:default; }
 .chat-panel-head small,.chat-bubble>span,.chat-typing { color:var(--muted); font-size:12px; }
-.chat-panel-actions > button[aria-label="Close chat"] { flex:0 0 32px; width:32px; height:32px; border:0; border-radius:10px; color:var(--muted); background:var(--input); font-size:22px; }
+.chat-panel-actions > button[aria-label="Close chat"] { display:grid; flex:0 0 32px; width:32px; height:32px; place-items:center; border:0; border-radius:10px; color:var(--muted); background:var(--input); font-size:22px; }
 .chat-messages { display:flex; flex-direction:column; gap:11px; min-height:120px; padding:15px; overflow:auto; }
 .chat-bubble { max-width:88%; padding:10px 12px; border:1px solid var(--line); border-radius:15px; background:var(--input); }
 .chat-bubble p { margin:5px 0 0; white-space:pre-wrap; line-height:1.5; font-size:13px; }
@@ -372,6 +377,20 @@ footer > span { color: var(--ink); font-weight: 700; }
   .card-heading select { min-width: 105px; }
   .dashboard-header h1 { font-size: 23px; }
   footer { align-items: flex-start; flex-direction: column; padding: 22px 20px; }
+}
+@media (max-width: 360px) {
+  .topbar { gap: 5px; padding-inline: 10px; }
+  .topbar nav { gap: 5px; }
+  .topbar .button { gap: 0; padding-inline: 9px; font-size: 0; }
+  .topbar .button-icon { width: 18px; height: 18px; }
+}
+@media (max-width: 500px) {
+  .chat-widget { right: 12px; bottom: 12px; }
+  .chat-panel { width: min(390px, calc(100vw - 24px)); max-height: min(620px, calc(100vh - 88px)); }
+  .chat-panel-head { gap: 8px; padding: 12px; }
+  .chat-panel-actions { gap: 6px; }
+  .chat-new-request { gap: 4px; min-height: 32px; padding-inline: 8px; font-size: 11px; }
+  .chat-messages { min-height: 90px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }

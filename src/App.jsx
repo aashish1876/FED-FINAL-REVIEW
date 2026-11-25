@@ -490,7 +490,7 @@ function AuthPage({ mode, onAuthenticate, onRegister, onNavigate, theme, onToggl
           <h2>{isLogin ? 'Sign in' : 'Join FeedbackHub'}</h2>
           {!isLogin && <label>Full name<input name="name" required placeholder="Your name" /></label>}
           <label>Email address<input name="email" type="email" required placeholder="you@example.com" /></label>
-          <label>Password<input name="password" type="password" required minLength="12" autoComplete={isLogin ? 'current-password' : 'new-password'} placeholder="Minimum 12 characters" /></label>
+          <label>Password<input name="password" type="password" required minLength={isLogin ? undefined : 12} autoComplete={isLogin ? 'current-password' : 'new-password'} placeholder={isLogin ? 'Enter password' : 'Minimum 12 characters'} /></label>
           {!isLogin && <label>Confirm password<input name="confirmPassword" type="password" required autoComplete="new-password" placeholder="Repeat password" /></label>}
           {(
             <div className="captcha-row glass-hover">
@@ -510,7 +510,7 @@ function AuthPage({ mode, onAuthenticate, onRegister, onNavigate, theme, onToggl
           )}
           {error && <div className="form-error" role="alert">{error}</div>}
           <button className={`button button-large ${isLogin ? 'action-login' : 'action-create'}`} type="submit"><Icon name={isLogin ? 'login' : 'user-plus'} />{isLogin ? 'Sign in' : 'Create account'}</button>
-          {isLogin ? <p>Sign in with the administrator account configured for this deployment.</p> : null}
+          {isLogin ? <p>Sign in with your FeedbackHub account details.</p> : null}
           <div className="auth-switch">{isLogin ? 'New to FeedbackHub?' : 'Already have an account?'} <button className={isLogin ? 'action-create' : 'action-login'} type="button" onClick={() => { setError(''); onNavigate(isLogin ? 'signup' : 'login'); }}><Icon name={isLogin ? 'user-plus' : 'login'} />{isLogin ? 'Create account' : 'Sign in'}</button></div>
           <button type="button" className="back-link" onClick={() => onNavigate('home')}>← Back to home</button>
         </form>
@@ -769,7 +769,7 @@ function ChatWidget({ user, messages, flow, onFlowChange, onNewRequest, loading,
   }
   return <div className={`chat-widget ${open ? 'chat-widget-open' : ''}`}>
     {open && <section className="chat-panel glass-hover" aria-label="FeedbackHub assistant">
-      <header className="chat-panel-head"><div><strong>{activeTicket ? 'Human support' : 'FeedbackHub assistant'}</strong><small>{activeTicket ? 'Private conversation · Saved in Support sheet' : 'AI support · Private chat'}</small></div><div className="chat-panel-actions">{user && <button className="chat-new-request" type="button" onClick={startNewRequest} disabled={loading || busy}>＋ New request</button>}<button type="button" onClick={() => setOpen(false)} aria-label="Close chat">×</button></div></header>
+      <header className="chat-panel-head"><div className="chat-panel-title"><strong>{activeTicket ? 'Human support' : 'FeedbackHub assistant'}</strong><small>{activeTicket ? 'Private conversation · Saved in Support sheet' : 'AI support · Private chat'}</small></div><div className="chat-panel-actions">{user && <button className="chat-new-request" type="button" onClick={startNewRequest} disabled={loading || busy} aria-label="Start a new support request"><span aria-hidden="true">＋</span><span>New request</span></button>}<button type="button" onClick={() => setOpen(false)} aria-label="Close chat">×</button></div></header>
       <div className="chat-messages" aria-live="polite">{transcript.map((message, index) => <div className={`chat-bubble chat-${message.role}`} key={`${index}-${message.content.slice(0, 10)}`}><span>{message.role === 'user' ? 'You' : message.role === 'human' ? 'Support team' : 'Assistant'}</span><p>{message.content}</p></div>)}{loading && <div className="chat-typing">Assistant is replying…</div>}{busy && activeTicket && <div className="chat-typing">Saving to your support conversation…</div>}</div>
       {activeTicket && <div className="chat-ticket-summary"><strong>Support request:</strong> {activeTicket.status} <button type="button" onClick={refreshTickets}>Refresh</button></div>}
       {notice && <p className="chat-notice" role="status">{notice}{!user && <button type="button" onClick={() => onNavigate?.('login')}>Sign in</button>}</p>}
