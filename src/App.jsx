@@ -79,6 +79,10 @@ function Stars({ rating }) {
 
 export default function App() {
   const [feedback, setFeedback] = useState([]);
+  const [chatMessages, setChatMessages] = useState([{ role: 'assistant', content: 'Hi! Tell me what happened, or ask me how FeedbackHub works. I can connect you with a person if you need more help.' }]);
+  const [chatFlow, setChatFlow] = useState({ stage: 'idle', issue: '' });
+  const [chatLoading, setChatLoading] = useState(false);
+  const [supportTickets, setSupportTickets] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [view, setView] = useState('home');
   const [apiError, setApiError] = useState('');
@@ -132,6 +136,10 @@ export default function App() {
         try { await migrateLegacyData(); }
         catch (error) { if (active) setApiError(error.message); }
       }
+      if (user) {
+        try { const support = await apiRequest('support'); if (active) setSupportTickets(support.tickets); }
+        catch (error) { if (active) setApiError(error.message); }
+      }
       try {
         const result = await apiRequest('feedback');
         if (active) {
@@ -170,6 +178,10 @@ export default function App() {
       if (result.user.role === 'admin') await migrateLegacyData();
       const data = await apiRequest('feedback');
       setFeedback(data.feedback);
+      if (result.user.role === 'admin') {
+        const support = await apiRequest('support');
+        setSupportTickets(support.tickets);
+      }
     } catch (error) {
       setApiError(error.message);
     }
@@ -226,21 +238,81 @@ export default function App() {
     setFeedback((items) => items.filter((item) => item.id !== id));
   }
 
+  async function sendChat(messages) {
+    setChatMessages(messages);
+    setChatLoading(true);
+    try {
+      const result = await apiRequest('assistant/chat', { method: 'POST', body: { messages }, timeoutMs: 30000 });
+      setChatMessages((current) => [...messages, { role: 'assistant', content: result.reply }]);
+    } catch (error) {
+      setChatMessages((current) => [...messages, { role: 'assistant', content: error.message }]);
+    } finally { setChatLoading(false); }
+  }
+
+  async function handoffChat(messages, issue) {
+    const result = await apiRequest('support/handoff', { method: 'POST', body: { messages, issue } });
+    setSupportTickets((current) => [result.ticket, ...current]);
+    return result.ticket;
+  }
+
+  async function sendSupportMessage(ticketId, content) {
+    const result = await apiRequest(`support/${encodeURIComponent(ticketId)}/messages`, { method: 'POST', body: { content } });
+    setSupportTickets((current) => current.map((ticket) => ticket.id === ticketId ? result.ticket : ticket));
+    return result.ticket;
+  }
+
+  async function refreshSupport() {
+    const result = await apiRequest('support');
+    setSupportTickets(result.tickets);
+    return result.tickets;
+  }
+
+  useEffect(() => {
+    if (!currentUser || !['admin', 'user'].includes(currentUser.role) || !['admin', 'user'].includes(view)) return undefined;
+    let active = true;
+    let inFlight = false;
+    async function refreshVisibleSupport() {
+      if (!active || document.visibilityState !== 'visible' || inFlight) return;
+      inFlight = true;
+      try {
+        const result = await apiRequest('support');
+        if (active) setSupportTickets(result.tickets);
+      } catch {
+        // Keep the current conversation visible if the sheet is briefly unavailable.
+      } finally {
+        inFlight = false;
+      }
+    }
+    const timer = window.setInterval(refreshVisibleSupport, 5000);
+    document.addEventListener('visibilitychange', refreshVisibleSupport);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshVisibleSupport);
+    };
+  }, [currentUser?.id, currentUser?.role, view]);
+
+  async function updateSupport(ticketId, status, adminReply) {
+    const result = await apiRequest(`support/${encodeURIComponent(ticketId)}`, { method: 'PATCH', body: { status, adminReply } });
+    setSupportTickets((current) => current.map((ticket) => ticket.id === ticketId ? result.ticket : ticket));
+  }
+
   if (view === 'signup' || view === 'login') {
     return <AuthPage mode={view} theme={theme} onToggleTheme={toggleTheme} onAuthenticate={authenticate} onRegister={register} onNavigate={setView} />;
   }
 
   if (currentUser?.role === 'admin' && view === 'admin') {
-    return <AdminDashboard user={currentUser} feedback={feedback} onStatusChange={updateFeedbackStatus} onDelete={deleteFeedback} onLogout={logout} apiError={apiError} theme={theme} onToggleTheme={toggleTheme} />;
+    return <AdminDashboard user={currentUser} feedback={feedback} supportTickets={supportTickets} onUpdateSupport={updateSupport} onSendSupportMessage={sendSupportMessage} onRefreshSupport={refreshSupport} onStatusChange={updateFeedbackStatus} onDelete={deleteFeedback} onLogout={logout} apiError={apiError} theme={theme} onToggleTheme={toggleTheme} />;
   }
 
   if (currentUser?.role === 'user' && view === 'user') {
-    return <UserDashboard user={currentUser} feedback={feedback} onSubmitFeedback={submitFeedback} onLogout={logout} apiError={apiError} theme={theme} onToggleTheme={toggleTheme} />;
+    return <><UserDashboard user={currentUser} feedback={feedback} onSubmitFeedback={submitFeedback} supportTickets={supportTickets} onRefreshSupport={refreshSupport} onLogout={logout} apiError={apiError} theme={theme} onToggleTheme={toggleTheme} /><ChatWidget user={currentUser} messages={chatMessages} flow={chatFlow} onFlowChange={setChatFlow} loading={chatLoading} onSend={sendChat} onSetMessages={setChatMessages} onHandoff={handoffChat} onSendSupportMessage={sendSupportMessage} supportTickets={supportTickets} onRefreshSupport={refreshSupport} /></>;
   }
 
   if (!ready) return <div className="loading-screen">Connecting to FeedbackHub...</div>;
 
   return (
+    <>
     <div className="site-shell">
       <header className="topbar">
         <button className="brand" onClick={() => setView('home')}><span className="brand-mark">F</span> FeedbackHub</button>
@@ -303,6 +375,8 @@ export default function App() {
       </main>
       <footer><span>FeedbackHub</span><small>© 2026 Feedback Management System</small></footer>
     </div>
+    <ChatWidget user={currentUser} messages={chatMessages} flow={chatFlow} onFlowChange={setChatFlow} loading={chatLoading} onSend={sendChat} onSetMessages={setChatMessages} onHandoff={handoffChat} onSendSupportMessage={sendSupportMessage} supportTickets={supportTickets} onRefreshSupport={refreshSupport} onNavigate={setView} />
+    </>
   );
 }
 
@@ -457,7 +531,7 @@ function DashboardShell({ user, title, subtitle, onLogout, children, theme, onTo
   );
 }
 
-function AdminDashboard({ user, feedback, onStatusChange, onDelete, onLogout, apiError, theme, onToggleTheme }) {
+function AdminDashboard({ user, feedback, supportTickets, onUpdateSupport, onSendSupportMessage, onRefreshSupport, onStatusChange, onDelete, onLogout, apiError, theme, onToggleTheme }) {
   const [filter, setFilter] = useState('All');
   const average = feedback.length ? (feedback.reduce((sum, item) => sum + item.rating, 0) / feedback.length).toFixed(1) : '0.0';
   const visible = filter === 'All' ? feedback : feedback.filter((item) => item.status === filter);
@@ -479,11 +553,12 @@ function AdminDashboard({ user, feedback, onStatusChange, onDelete, onLogout, ap
         </div>
         <FeedbackTable feedback={visible} onStatusChange={onStatusChange} onDelete={onDelete} admin />
       </section>
+      <AdminSupportPanel tickets={supportTickets} onUpdate={onUpdateSupport} onSendMessage={onSendSupportMessage} onRefresh={onRefreshSupport} />
     </DashboardShell>
   );
 }
 
-function UserDashboard({ user, feedback, onSubmitFeedback, onLogout, apiError, theme, onToggleTheme }) {
+function UserDashboard({ user, feedback, onSubmitFeedback, supportTickets, onRefreshSupport, onLogout, apiError, theme, onToggleTheme }) {
   const [category, setCategory] = useState('Service');
   const [rating, setRating] = useState(5);
   const [text, setText] = useState('');
@@ -536,8 +611,147 @@ function UserDashboard({ user, feedback, onSubmitFeedback, onLogout, apiError, t
           {myFeedback.length ? <div className="mobile-feedback-list">{myFeedback.map((item) => <article key={item.id}><div><Stars rating={item.rating} /><span className={`status ${item.pending ? 'status-pending' : `status-${item.status.toLowerCase().replace(' ', '-')}`}`}>{item.pending ? 'Saving…' : item.status}</span></div><p>{item.message}</p><small>{item.category} · {new Date(item.createdAt).toLocaleDateString()}</small></article>)}</div> : <div className="empty-state"><strong>No feedback yet</strong><p>Your submitted feedback will appear here.</p></div>}
         </section>
       </div>
+      <section className="content-card support-status-card glass-hover scroll-reveal">
+        <div className="card-heading"><div><h2>Human support</h2><p>Private replies to your support requests appear here.</p></div><button className="button button-ghost" onClick={onRefreshSupport}>Refresh</button></div>
+        {supportTickets.length ? <div className="support-ticket-list">{supportTickets.map((ticket) => <article key={ticket.id}><div className="support-ticket-heading"><strong>{ticket.status}</strong><small>{new Date(ticket.createdAt).toLocaleString()}</small></div><p>{ticket.adminReply || 'Your request is with the support team. We will reply here.'}</p></article>)}</div> : <div className="empty-state"><strong>No human support requests</strong><p>Use the chat button if you need to speak with a person.</p></div>}
+      </section>
     </DashboardShell>
   );
+}
+
+function AdminSupportPanel({ tickets, onUpdate, onSendMessage, onRefresh }) {
+  const [drafts, setDrafts] = useState({});
+  const [statuses, setStatuses] = useState({});
+  const [notice, setNotice] = useState('');
+  const [busyId, setBusyId] = useState('');
+  async function save(ticket) {
+    setBusyId(ticket.id); setNotice('');
+    try {
+      const nextStatus = statuses[ticket.id] || ticket.status;
+      if (nextStatus !== ticket.status) await onUpdate(ticket.id, nextStatus);
+      const message = (drafts[ticket.id] || '').trim();
+      if (message) {
+        await onSendMessage(ticket.id, message);
+        setDrafts((current) => ({ ...current, [ticket.id]: '' }));
+      }
+      setNotice(message ? 'Reply sent to the user.' : 'Support status saved.');
+    } catch (error) { setNotice(error.message); }
+    finally { setBusyId(''); }
+  }
+  return <section className="content-card support-admin-card glass-hover scroll-reveal">
+    <div className="card-heading"><div><h2>Human support</h2><p>Private conversations and replies.</p></div><button className="button button-ghost" onClick={() => onRefresh().catch((error) => setNotice(error.message))}>Refresh</button></div>
+    {notice && <div className="support-notice" role="status">{notice}</div>}
+    {!tickets.length ? <div className="empty-state"><strong>No open requests</strong><p>Requests for human help will appear here.</p></div> : <div className="support-ticket-list">{tickets.map((ticket) => <article key={ticket.id} className="support-admin-ticket">
+      <div className="support-ticket-heading"><strong>{ticket.userName}</strong><span className={`status status-${String(ticket.status).toLowerCase().replace(' ', '-')}`}>{ticket.status}</span></div>
+      <a href={`mailto:${encodeURIComponent(ticket.email)}`}>{ticket.email}</a><small>{new Date(ticket.createdAt).toLocaleString()}</small>
+      <div className="support-issue"><strong>Issue</strong><p>{ticket.issue || 'Issue details are in the conversation below.'}</p></div>
+      <div className="support-transcript">{ticket.conversation.map((message, index) => <p key={`${ticket.id}-${index}`}><strong>{message.role === 'user' ? ticket.userName : message.role === 'human' ? 'Support team' : 'Assistant'}:</strong> {message.content}</p>)}</div>
+      <label>Status<select value={statuses[ticket.id] || ticket.status} onChange={(event) => setStatuses((current) => ({ ...current, [ticket.id]: event.target.value }))}><option>Open</option><option>In Review</option><option>Resolved</option></select></label>
+      <label>Message the user<textarea value={drafts[ticket.id] || ''} onChange={(event) => setDrafts((current) => ({ ...current, [ticket.id]: event.target.value }))} maxLength="1200" placeholder="Write a reply in this conversation…" /></label>
+      <button className="button" disabled={busyId === ticket.id} onClick={() => save(ticket)}>{busyId === ticket.id ? 'Sending…' : 'Save status / send reply'}</button>
+    </article>)}</div>}
+  </section>;
+}
+
+function ChatWidget({ user, messages, flow, onFlowChange, loading, onSend, onSetMessages, onHandoff, onSendSupportMessage, supportTickets, onRefreshSupport, onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [tickets, setTickets] = useState(supportTickets || []);
+  useEffect(() => { setTickets(supportTickets || []); }, [supportTickets]);
+  const activeTicket = user ? tickets[0] : null;
+  const transcript = activeTicket?.conversation || messages;
+
+  async function createHandoff(nextMessages = messages) {
+    if (flow.stage !== 'consent' || flow.issue.trim().length < 5) {
+      if (flow.stage === 'details') {
+        setNotice('Please describe what happened before connecting to a person.');
+        return;
+      }
+      const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user')?.content || '';
+      const seededIssue = isSupportConcern(lastUserMessage) ? lastUserMessage : '';
+      onSetMessages([...messages, { role: 'assistant', content: seededIssue ? 'Before I connect you, please tell me specifically what happened so I can include the right details.' : 'I can connect you with a person. First, what issue should I share with the support team?' }]);
+      onFlowChange({ stage: 'details', issue: seededIssue });
+      setNotice('');
+      return;
+    }
+    if (!user) {
+      setNotice('Sign in to share this issue with a person. Your conversation will stay here.');
+      return;
+    }
+    setBusy(true); setNotice('');
+    try {
+      await onHandoff(nextMessages, flow.issue);
+      setNotice('Your issue was sent to human support. Continue the conversation here.');
+      onFlowChange({ stage: 'thread', issue: flow.issue });
+    } catch (error) { setNotice(error.message); }
+    finally { setBusy(false); }
+  }
+  async function submit(event) {
+    event.preventDefault();
+    const content = draft.trim();
+    if (!content || loading || busy) return;
+    setDraft(''); setNotice('');
+    if (activeTicket) {
+      setBusy(true);
+      try { await onSendSupportMessage(activeTicket.id, content); }
+      catch (error) { setNotice(error.message); setDraft(content); }
+      finally { setBusy(false); }
+      return;
+    }
+    const next = [...messages, { role: 'user', content }];
+    if (flow.stage === 'details') {
+      const issue = [flow.issue, content].filter(Boolean).join(' — ').slice(0, 2000);
+      onSetMessages([...next, { role: 'assistant', content: 'Thanks for explaining. Would you like me to connect you with a human support person? Reply “yes” or choose Connect me with a person.' }]);
+      onFlowChange({ stage: 'consent', issue });
+      return;
+    }
+    if (flow.stage === 'consent' && /^(yes|yeah|yep|sure|please|connect|human|talk to (a )?(person|human)|speak to (a )?(person|human))(\b|\s|[.!])/i.test(content)) {
+      onSetMessages(next);
+      await createHandoff(next);
+      return;
+    }
+    if (flow.stage === 'consent' && /^(no|nope|not now|not yet|keep helping|continue with ai)(\b|\s|[.!])/i.test(content)) {
+      onFlowChange({ stage: 'idle', issue: '' });
+      await onSend(next);
+      return;
+    }
+    if (flow.stage === 'consent') {
+      const issue = [flow.issue, content].filter(Boolean).join(' — ').slice(0, 2000);
+      onSetMessages([...next, { role: 'assistant', content: 'I’ve added that detail. Would you like me to connect you with a human support person? Reply “yes” or choose Connect me with a person.' }]);
+      onFlowChange({ stage: 'consent', issue });
+      return;
+    }
+    if (isSupportConcern(content)) {
+      const specific = content.trim().split(/\s+/).length >= 12 || /\b(did not|didn't|never|wasn't|late|dirty|charged|wrong|missing|rude|broken|refused|arrived|waited|cancelled|not delivered|no one|stopped|failed)\b/i.test(content);
+      onFlowChange({ stage: specific ? 'consent' : 'details', issue: content.slice(0, 2000) });
+      onSetMessages([...next, { role: 'assistant', content: specific
+        ? 'I’m sorry that happened. I’ve noted the issue. Would you like me to connect you with a human support person? Reply “yes” or choose Connect me with a person.'
+        : 'I’m sorry you’re having trouble. What specifically happened with the service? A short description will help me record the issue correctly.' }]);
+      return;
+    }
+    await onSend(next);
+  }
+  async function refreshTickets() {
+    try { setTickets(await onRefreshSupport()); setNotice('Support conversation refreshed.'); }
+    catch (error) { setNotice(error.message); }
+  }
+  return <div className={`chat-widget ${open ? 'chat-widget-open' : ''}`}>
+    {open && <section className="chat-panel glass-hover" aria-label="FeedbackHub assistant">
+      <header className="chat-panel-head"><div><strong>{activeTicket ? 'Human support' : 'FeedbackHub assistant'}</strong><small>{activeTicket ? 'Private conversation · Saved in Support sheet' : 'AI support · Private chat'}</small></div><button type="button" onClick={() => setOpen(false)} aria-label="Close chat">×</button></header>
+      <div className="chat-messages" aria-live="polite">{transcript.map((message, index) => <div className={`chat-bubble chat-${message.role}`} key={`${index}-${message.content.slice(0, 10)}`}><span>{message.role === 'user' ? 'You' : message.role === 'human' ? 'Support team' : 'Assistant'}</span><p>{message.content}</p></div>)}{loading && <div className="chat-typing">Assistant is replying…</div>}{busy && activeTicket && <div className="chat-typing">Saving to your support conversation…</div>}</div>
+      {activeTicket && <div className="chat-ticket-summary"><strong>Support request:</strong> {activeTicket.status} <button type="button" onClick={refreshTickets}>Refresh</button></div>}
+      {notice && <p className="chat-notice" role="status">{notice}{!user && <button type="button" onClick={() => onNavigate?.('login')}>Sign in</button>}</p>}
+      <form className="chat-compose" onSubmit={submit}><input value={draft} onChange={(event) => setDraft(event.target.value)} maxLength="1200" placeholder={activeTicket ? 'Message human support…' : 'Ask about feedback…'} aria-label="Your message"/><button type="submit" disabled={loading || busy || !draft.trim()} aria-label="Send message">➤</button></form>
+      {!activeTicket && <button className="chat-human-button" type="button" onClick={() => createHandoff()} disabled={busy}>{busy ? 'Sending request…' : flow.stage === 'consent' ? 'Connect me with a person' : 'Talk to a person'}</button>}
+    </section>}
+    <button className="chat-launcher" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={open ? 'Close support chat' : 'Open support chat'}><span>{open ? '×' : '✦'}</span>{!open && <span>Chat with us</span>}</button>
+  </div>;
+}
+
+function isSupportConcern(value) {
+  return /\b(i have|i've|my|there is|had a|problem|complaint|complain|not working|wrong with|bad service|unhappy|disappointed|wasn't|didn't|failed|broken|missing|late|dirty|rude|hotel|booking|charged|refund|never arrived)\b/i.test(value);
 }
 
 function FeedbackTable({ feedback, onStatusChange, onDelete, admin }) {

@@ -48,11 +48,139 @@ const loginRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 2
 const signupRateLimit = createRateLimiter({ windowMs: 60 * 60_000, maxRequests: 10 });
 const feedbackReadRateLimit = createRateLimiter({ windowMs: 60_000, maxRequests: 60 });
 const feedbackWriteRateLimit = createRateLimiter({ windowMs: 10 * 60_000, maxRequests: 10 });
+const assistantRateLimit = createRateLimiter({ windowMs: 60_000, maxRequests: 20 });
+const supportHandoffRateLimit = createRateLimiter({ windowMs: 10 * 60_000, maxRequests: 5 });
+const supportMessageRateLimit = createRateLimiter({ windowMs: 10 * 60_000, maxRequests: 40 });
 let weakAdminPasswordWarningLogged = false;
 
 app.get('/api/health', (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ ok: true });
+});
+
+function aiChatUrl(baseUrl) {
+  const base = String(baseUrl || '').trim().replace(/\/+$/, '');
+  if (!base) return '';
+  if (/\/chat\/completions$/i.test(base)) return base;
+  if (/\/openai$/i.test(base) || /\/v1$/i.test(base)) return `${base}/chat/completions`;
+  return `${base}/v1/chat/completions`;
+}
+
+app.post('/api/assistant/chat', assistantRateLimit, async (req, res) => {
+  const apiKey = process.env.AI_API_KEY;
+  const url = aiChatUrl(process.env.BASE_URL || process.env.AI_BASE_URL);
+  if (!apiKey || !url) return res.status(503).json({ error: 'AI chat is not configured yet. Add AI_API_KEY and BASE_URL to the server environment.' });
+  const input = Array.isArray(req.body.messages) ? req.body.messages.slice(-12) : [];
+  const messages = [];
+  for (const item of input) {
+    if (!item || !['user', 'assistant'].includes(item.role) || typeof item.content !== 'string') continue;
+    const content = item.content.trim().slice(0, 1200);
+    if (content) messages.push({ role: item.role, content });
+  }
+  if (!messages.length || messages[messages.length - 1].role !== 'user') {
+    return res.status(400).json({ error: 'Send a message to start the chat.' });
+  }
+  const system = {
+    role: 'system',
+    content: 'You are FeedbackHub’s concise, friendly support assistant. For a complaint or service problem, first ask what happened if the user has only described a vague problem. Once they explain the issue, summarize it briefly and ask whether they want to connect with a human. Never claim the request was sent unless FeedbackHub confirms it. You cannot access account records, promise that a named company/team will respond, or change feedback status. Do not invent categories: valid feedback categories are Service, Product, Support, Website, and Other. Do not request or repeat passwords, payment details, or sensitive personal data. Keep replies brief and clear.',
+  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: process.env.AI_MODEL || 'gemini-3.8-flash', messages: [system, ...messages], max_tokens: 350, temperature: 0.35, stream: false }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      console.error('AI provider returned an error', { status: response.status });
+      return res.status(502).json({ error: 'The assistant could not reply right now. Please try again.' });
+    }
+    const result = await response.json();
+    const answer = result?.choices?.[0]?.message?.content;
+    if (typeof answer !== 'string' || !answer.trim()) return res.status(502).json({ error: 'The assistant returned an empty reply. Please try again.' });
+    res.json({ reply: answer.trim().slice(0, 4000) });
+  } catch (error) {
+    console.error('AI request failed', { name: error.name });
+    res.status(502).json({ error: 'The assistant is temporarily unavailable. Please try again.' });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.post('/api/support/handoff', supportHandoffRateLimit, async (req, res) => {
+  try {
+    const { store, user } = await authorize(req);
+    const conversation = Array.isArray(req.body.messages) ? req.body.messages.slice(-30) : [];
+    const issue = String(req.body.issue || '').trim().slice(0, 2000);
+    const safeMessages = conversation
+      .filter((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string')
+      .map((item) => ({ role: item.role, content: item.content.trim().slice(0, 1200) }))
+      .filter((item) => item.content);
+    if (!safeMessages.some((item) => item.role === 'user') || issue.length < 5) return res.status(400).json({ error: 'Please describe the issue before requesting a person.' });
+    safeMessages.push({ role: 'assistant', content: 'I’ve shared your issue with the human support team. They’ll reply here.' });
+    const now = new Date().toISOString();
+    const ticket = {
+      id: randomUUID(), userId: user.id, userName: user.name, email: user.email,
+      conversation: JSON.stringify(safeMessages), status: 'Open', adminReply: '', createdAt: now, updatedAt: now, issue,
+    };
+    await store.append('Support', ticket);
+    res.status(201).json({ ticket: { ...ticket, conversation: safeMessages } });
+  } catch (error) { sendError(res, error); }
+});
+
+app.get('/api/support', async (req, res) => {
+  try {
+    const { store, user } = await authorize(req);
+    const rows = await store.list('Support');
+    const tickets = rows.map(({ record }) => ({
+      ...record,
+      conversation: (() => { try { return JSON.parse(record.conversation || '[]'); } catch { return []; } })(),
+    })).filter((item) => user.role === 'admin' || item.userId === user.id)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json({ tickets });
+  } catch (error) { sendError(res, error); }
+});
+
+app.patch('/api/support/:id', async (req, res) => {
+  try {
+    const { store } = await authorize(req, 'admin');
+    const status = String(req.body.status || '');
+    if (!['Open', 'In Review', 'Resolved'].includes(status)) return res.status(400).json({ error: 'Choose a valid support status.' });
+    const rows = await store.list('Support');
+    const entry = rows.find(({ record }) => record.id === req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Support request was not found.' });
+    const updated = { ...entry.record, status, updatedAt: new Date().toISOString() };
+    await store.update('Support', entry.rowNumber, updated);
+    res.json({ ticket: { ...updated, conversation: (() => { try { return JSON.parse(updated.conversation || '[]'); } catch { return []; } })() } });
+  } catch (error) { sendError(res, error); }
+});
+
+app.post('/api/support/:id/messages', supportMessageRateLimit, async (req, res) => {
+  try {
+    const { store, user } = await authorize(req);
+    const content = String(req.body.content || '').trim();
+    if (!content || content.length > 2000) return res.status(400).json({ error: 'Write a message up to 2000 characters.' });
+    const rows = await store.list('Support');
+    const entry = rows.find(({ record }) => record.id === req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Support request was not found.' });
+    if (user.role !== 'admin' && entry.record.userId !== user.id) return res.status(403).json({ error: 'You do not have permission to access this support request.' });
+    let conversation = [];
+    try { conversation = JSON.parse(entry.record.conversation || '[]'); } catch { /* start a clean thread if legacy data is malformed */ }
+    const role = user.role === 'admin' ? 'human' : 'user';
+    const message = { role, content: content.slice(0, 1200), createdAt: new Date().toISOString() };
+    conversation.push(message);
+    const updated = {
+      ...entry.record,
+      conversation: JSON.stringify(conversation.slice(-100)),
+      adminReply: role === 'human' ? message.content : '',
+      status: role === 'user' && entry.record.status === 'Resolved' ? 'Open' : entry.record.status,
+      updatedAt: message.createdAt,
+    };
+    await store.update('Support', entry.rowNumber, updated);
+    res.status(201).json({ ticket: { ...updated, conversation } });
+  } catch (error) { sendError(res, error); }
 });
 
 const captchaAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';

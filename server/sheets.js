@@ -4,6 +4,7 @@ import { createPrivateKey } from 'node:crypto';
 const TABLES = {
   Users: ['id', 'name', 'email', 'passwordHash', 'role', 'createdAt'],
   Feedback: ['id', 'userId', 'userName', 'category', 'rating', 'message', 'status', 'createdAt'],
+  Support: ['id', 'userId', 'userName', 'email', 'conversation', 'status', 'adminReply', 'createdAt', 'updatedAt', 'issue'],
 };
 
 let cachedClientIdentity = '';
@@ -70,10 +71,12 @@ async function ensureTables(sheets, spreadsheetId) {
       spreadsheetId,
       range: `${title}!A1:Z1`,
     });
-    if (!result.data.values?.length) {
+    const currentHeaders = result.data.values?.[0] || [];
+    const missingHeaders = headers.filter((header) => !currentHeaders.includes(header));
+    if (!result.data.values?.length || missingHeaders.length) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${title}!A1`,
+        range: `${title}!A1:${String.fromCharCode(64 + headers.length)}1`,
         valueInputOption: 'RAW',
         requestBody: { values: [headers] },
       });

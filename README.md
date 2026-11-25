@@ -9,17 +9,19 @@ FeedbackHub is a responsive customer feedback app built with React, Vite, and Ex
 - Feedback submission with category, 1–5 star rating, review text, and status tracking.
 - Admin dashboard for reviewing submissions, changing statuses, and deleting feedback.
 - Public home feed that displays feedback across all statuses.
+- AI chat with a consent-based human handoff; private support issues and threaded replies are stored in a `Support` Google Sheets tab.
 - Glass-style interface with saved light/dark theme preference, responsive layouts, hover details, and scroll reveals.
 - Optimistic feedback updates: a new review appears immediately while the spreadsheet save completes, then is confirmed or rolled back on error.
 
 ## Google Sheets database
 
-The API creates two tabs in the configured spreadsheet:
+The API creates the required tabs in the configured spreadsheet:
 
 | Tab | Stored fields |
 | --- | --- |
 | `Users` | ID, name, email/login ID, bcrypt password hash, role, creation time |
 | `Feedback` | ID, user ID, user name, category, rating, review message, status, creation time |
+| `Support` | Private issue summary, conversation transcript, status, and human support replies |
 
 Passwords are never stored as readable text. The API connects to Sheets with a Google service account; the browser does not access the spreadsheet directly. Share the spreadsheet with the service account's `client_email` and grant it **Editor** access.
 
@@ -33,8 +35,11 @@ Passwords are never stored as readable text. The API connects to Sheets with a G
    - `GOOGLE_SERVICE_ACCOUNT_JSON`: the full service account JSON, kept private.
    - `JWT_SECRET`: a long, random secret used for sessions and encrypted CAPTCHA challenges.
    - `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and optionally `ADMIN_NAME`: the initial administrator account. Use a unique password of at least 12 characters.
+   - `AI_API_KEY`, `BASE_URL`, and `AI_MODEL`: the server-side AI provider settings. The example values use Gemini; never put this key in browser code or commit a real key.
 
-The API creates the `Users` and `Feedback` tabs and their headers the first time it connects. Keep `.env` and downloaded service account keys out of GitHub.
+The API creates the `Users`, `Feedback`, and `Support` tabs and their headers the first time it connects. Keep `.env` and downloaded service account keys out of GitHub.
+
+For local FreeLLMAPI testing, set `BASE_URL=http://127.0.0.1:31415` and use the model ID `auto`. For deployment with Gemini, set `BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`, use `AI_MODEL=gemini-3.8-flash`, and set `AI_API_KEY` to the Gemini API key in the hosting provider's private environment variables.
 
 ## Run locally
 
@@ -49,7 +54,7 @@ The Vite site runs at `http://127.0.0.1:5173`; the Express API runs at `http://1
 
 ## Deploy to Vercel
 
-Add `GOOGLE_SHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and `ADMIN_NAME` as Vercel project environment variables. Share the spreadsheet with the service account email, then deploy:
+Add `GOOGLE_SHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME`, `AI_API_KEY`, `BASE_URL`, and `AI_MODEL` as Vercel project environment variables. For Gemini, use the values described above. Share the spreadsheet with the service account email, then deploy:
 
 ```bash
 npm run build
