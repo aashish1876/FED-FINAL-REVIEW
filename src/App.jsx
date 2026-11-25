@@ -1,18 +1,17 @@
 import { useEffect, useState } from 'react';
 
-const TOKEN_KEY = 'feedback_session_token';
 const MIGRATED_KEY = 'feedback_sheet_migration_complete';
 const THEME_KEY = 'feedback_theme_preference';
 
-async function apiRequest(path, { method = 'GET', body, token = localStorage.getItem(TOKEN_KEY), timeoutMs = 15000 } = {}) {
+async function apiRequest(path, { method = 'GET', body, timeoutMs = 15000 } = {}) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`/api/${path}`, {
       method,
+      credentials: 'same-origin',
       headers: {
         ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
       signal: controller.signal,
@@ -55,15 +54,18 @@ function legacyData(key) {
   }
 }
 
-async function migrateLegacyData(token) {
-  if (localStorage.getItem(MIGRATED_KEY)) return;
+async function migrateLegacyData() {
+  if (localStorage.getItem(MIGRATED_KEY)) {
+    localStorage.removeItem('feedback_users');
+    localStorage.removeItem('feedback_data');
+    return;
+  }
   const users = legacyData('feedback_users');
   const feedback = legacyData('feedback_data');
   if (users.length || feedback.length) {
     await apiRequest('migrate/local-storage', {
       method: 'POST',
       body: { users, feedback },
-      token,
     });
     localStorage.removeItem('feedback_users');
     localStorage.removeItem('feedback_data');
@@ -115,34 +117,32 @@ export default function App() {
     let active = true;
     setReady(true);
     async function initialize() {
+      localStorage.removeItem('feedback_session_token');
+      let user = null;
       try {
-        const result = await apiRequest('feedback', { token: '' });
-        if (active) setFeedback(result.feedback);
+        const session = await apiRequest('session');
+        user = session.user;
       } catch (error) {
-        if (active) setApiError(error.message);
+        if (error.status === 401) {
+          try { await apiRequest('auth/logout', { method: 'POST' }); } catch { /* session is already unusable */ }
+        } else if (active) setApiError(error.message);
       }
 
-      const token = localStorage.getItem(TOKEN_KEY);
-      if (token) {
-        try {
-          const session = await apiRequest('session', { token });
-          if (session.user.role === 'admin') {
-            try {
-              await migrateLegacyData(token);
-            } catch (error) {
-              if (active) setApiError(error.message);
-            }
+      if (user?.role === 'admin') {
+        try { await migrateLegacyData(); }
+        catch (error) { if (active) setApiError(error.message); }
+      }
+      try {
+        const result = await apiRequest('feedback');
+        if (active) {
+          setFeedback(result.feedback);
+          if (user) {
+            setCurrentUser(user);
+            setView(user.role === 'admin' ? 'admin' : 'user');
           }
-          const result = await apiRequest('feedback', { token });
-          if (active) {
-            setCurrentUser(session.user);
-            setFeedback(result.feedback);
-            setView(session.user.role === 'admin' ? 'admin' : 'user');
-          }
-        } catch (error) {
-          if (error.status === 401) localStorage.removeItem(TOKEN_KEY);
-          else if (active) setApiError(error.message);
         }
+      } catch (error) {
+        if (active) setApiError(error.message);
       }
       if (active) setReady(true);
     }
@@ -153,21 +153,22 @@ export default function App() {
   const publicFeedback = [...feedback].sort((a, b) => b.rating - a.rating);
 
   function logout() {
-    localStorage.removeItem(TOKEN_KEY);
     setCurrentUser(null);
     setApiError('');
-    apiRequest('feedback', { token: '' }).then((result) => setFeedback(result.feedback)).catch((error) => setApiError(error.message));
+    apiRequest('auth/logout', { method: 'POST' })
+      .then(() => apiRequest('feedback'))
+      .then((result) => setFeedback(result.feedback))
+      .catch((error) => setApiError(error.message));
     setView('home');
   }
 
   async function enterDashboard(result) {
-    localStorage.setItem(TOKEN_KEY, result.token);
     setCurrentUser(result.user);
     setView(result.user.role === 'admin' ? 'admin' : 'user');
     setApiError('');
     try {
-      if (result.user.role === 'admin') await migrateLegacyData(result.token);
-      const data = await apiRequest('feedback', { token: result.token });
+      if (result.user.role === 'admin') await migrateLegacyData();
+      const data = await apiRequest('feedback');
       setFeedback(data.feedback);
     } catch (error) {
       setApiError(error.message);
@@ -176,7 +177,7 @@ export default function App() {
 
   async function authenticate(email, password, captchaId, captchaAnswer) {
     try {
-      const result = await apiRequest('auth/login', { method: 'POST', body: { email, password, captchaId, captchaAnswer }, token: '' });
+      const result = await apiRequest('auth/login', { method: 'POST', body: { email, password, captchaId, captchaAnswer } });
       await enterDashboard(result);
       return { ok: true };
     } catch (error) {
@@ -186,7 +187,7 @@ export default function App() {
 
   async function register(name, email, password, captchaId, captchaAnswer) {
     try {
-      const result = await apiRequest('auth/signup', { method: 'POST', body: { name, email, password, captchaId, captchaAnswer }, token: '' });
+      const result = await apiRequest('auth/signup', { method: 'POST', body: { name, email, password, captchaId, captchaAnswer } });
       await enterDashboard(result);
       return '';
     } catch (error) {
@@ -312,7 +313,7 @@ function PulseLogin({ authenticate, onNavigate }) {
 
   async function refreshCaptcha() {
     setCaptchaAnswer('');
-    try { setCaptcha(await apiRequest('captcha', { token: '' })); }
+    try { setCaptcha(await apiRequest('captcha')); }
     catch { setCaptcha(null); setError('Could not load CAPTCHA. Please refresh the page.'); }
   }
 
@@ -329,7 +330,7 @@ function PulseLogin({ authenticate, onNavigate }) {
   return (
     <form className="pulse-login" onSubmit={submit}>
       <label>Email address<input name="email" type="email" required placeholder="Enter email" /></label>
-      <label>Password<input name="password" type="password" required placeholder="Enter password" /></label>
+      <label>Password<input name="password" type="password" required autoComplete="current-password" placeholder="Enter password" /></label>
       <label className="captcha-label">Security check</label>
       <div className="pulse-captcha">
         {captcha ? <img src={`data:image/svg+xml,${encodeURIComponent(captcha.image)}`} alt="Enter the characters shown in the CAPTCHA image" /> : <span>Loading image…</span>}
@@ -376,7 +377,7 @@ function AuthPage({ mode, onAuthenticate, onRegister, onNavigate, theme, onToggl
 
   async function refreshCaptcha() {
     setCaptchaAnswer('');
-    try { setCaptcha(await apiRequest('captcha', { token: '' })); }
+    try { setCaptcha(await apiRequest('captcha')); }
     catch { setCaptcha(null); setError('Could not load CAPTCHA. Please refresh the page.'); }
   }
 
@@ -391,7 +392,7 @@ function AuthPage({ mode, onAuthenticate, onRegister, onNavigate, theme, onToggl
       if (!result.ok) refreshCaptcha();
       return;
     }
-    if (data.get('password').length < 8) return setError('Password must be at least 8 characters.');
+    if (data.get('password').length < 12) return setError('Password must be at least 12 characters.');
     if (data.get('password') !== data.get('confirmPassword')) return setError('Passwords do not match.');
     const registrationError = await onRegister(data.get('name'), data.get('email'), data.get('password'), captcha?.id, captchaAnswer);
     setError(registrationError);
@@ -410,8 +411,8 @@ function AuthPage({ mode, onAuthenticate, onRegister, onNavigate, theme, onToggl
           <h2>{isLogin ? 'Sign in' : 'Join FeedbackHub'}</h2>
           {!isLogin && <label>Full name<input name="name" required placeholder="Your name" /></label>}
           <label>Email address<input name="email" type="email" required placeholder="you@example.com" /></label>
-          <label>Password<input name="password" type="password" required minLength="8" placeholder="Minimum 8 characters" /></label>
-          {!isLogin && <label>Confirm password<input name="confirmPassword" type="password" required placeholder="Repeat password" /></label>}
+          <label>Password<input name="password" type="password" required minLength="12" autoComplete={isLogin ? 'current-password' : 'new-password'} placeholder="Minimum 12 characters" /></label>
+          {!isLogin && <label>Confirm password<input name="confirmPassword" type="password" required autoComplete="new-password" placeholder="Repeat password" /></label>}
           {(
             <div className="captcha-row glass-hover">
               {captcha ? <img className="captcha-question" src={`data:image/svg+xml,${encodeURIComponent(captcha.image)}`} alt="Enter the characters shown in the CAPTCHA image" /> : <div className="captcha-question">Loading image…</div>}
@@ -524,6 +525,7 @@ function UserDashboard({ user, feedback, onSubmitFeedback, onLogout, apiError, t
             <label>Rating</label>
             <div className="rating-picker">{[1, 2, 3, 4, 5].map((value) => <button type="button" key={value} className={value <= rating ? 'selected' : ''} onClick={() => setRating(value)}>★</button>)}</div>
             <label>Your feedback<textarea required minLength="10" value={text} onChange={(event) => setText(event.target.value)} placeholder="What went well, or what could be better?" /></label>
+            <p className="privacy-note">Your review and display name may appear in the public feedback feed. Please leave out sensitive personal details.</p>
             {done && <div className="success-message">Feedback submitted successfully.</div>}
             {submitError && <div className="form-error" role="alert">{submitError}</div>}
             <button className="button button-large" type="submit" disabled={isSubmitting}>{isSubmitting ? 'Saving…' : 'Submit feedback'}</button>

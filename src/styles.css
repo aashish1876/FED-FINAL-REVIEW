@@ -264,6 +264,7 @@ footer > span { color: var(--ink); font-weight: 700; }
 .feedback-form-card form { display: flex; flex-direction: column; }
 .feedback-form-card label { margin-top: 16px; }
 .feedback-form-card textarea { min-height: 120px; resize: vertical; }
+.privacy-note { margin: 8px 0 0; color: var(--subtle); font-size: 12px; line-height: 1.45; }
 .feedback-form-card select { color: var(--ink); }
 .feedback-form-card form > .button { align-self: flex-start; margin-top: 18px; }
 .rating-picker { display: flex; gap: 3px; }

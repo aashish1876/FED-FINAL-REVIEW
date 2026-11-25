@@ -9,3 +9,5 @@ dist/
 *.key
 *service-account*.json
 *credentials*.json
+/.ppt-build/
+/presentation-output/

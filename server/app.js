@@ -5,7 +5,50 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, 
 import { getSheetStore } from './sheets.js';
 
 const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', process.env.VERCEL ? 1 : false);
 app.use(express.json({ limit: '2mb' }));
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  });
+  if (req.path.startsWith('/api/')) res.set('Cache-Control', 'no-store');
+  next();
+});
+
+function createRateLimiter({ windowMs, maxRequests }) {
+  const buckets = new Map();
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    let bucket = buckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      bucket = { count: 0, resetAt: now + windowMs };
+      buckets.set(key, bucket);
+    }
+    bucket.count += 1;
+    if (bucket.count > maxRequests) {
+      res.set('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+      return res.status(429).json({ error: 'Too many attempts. Please wait and try again.' });
+    }
+    if (buckets.size > 5000) {
+      for (const [address, entry] of buckets) {
+        if (entry.resetAt <= now) buckets.delete(address);
+      }
+    }
+    next();
+  };
+}
+
+const captchaRateLimit = createRateLimiter({ windowMs: 60_000, maxRequests: 60 });
+const loginRateLimit = createRateLimiter({ windowMs: 15 * 60_000, maxRequests: 20 });
+const signupRateLimit = createRateLimiter({ windowMs: 60 * 60_000, maxRequests: 10 });
+const feedbackReadRateLimit = createRateLimiter({ windowMs: 60_000, maxRequests: 60 });
+const feedbackWriteRateLimit = createRateLimiter({ windowMs: 10 * 60_000, maxRequests: 10 });
+let weakAdminPasswordWarningLogged = false;
 
 app.get('/api/health', (req, res) => {
   res.set('Cache-Control', 'no-store');
@@ -66,21 +109,46 @@ function verifyCaptcha(token, answer) {
   }
 }
 
-app.get('/api/captcha', (req, res) => {
+function readSessionToken(req) {
+  const cookie = (req.headers.cookie || '').split(';').map((part) => part.trim())
+    .find((part) => part.startsWith('feedback_session='));
+  return cookie ? cookie.slice('feedback_session='.length) : '';
+}
+
+function setSessionCookie(res, token) {
+  res.cookie('feedback_session', token, {
+    httpOnly: true,
+    secure: Boolean(process.env.VERCEL) || process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/api',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+}
+
+function clearSessionCookie(res) {
+  res.clearCookie('feedback_session', {
+    httpOnly: true,
+    secure: Boolean(process.env.VERCEL) || process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/api',
+  });
+}
+
+app.get('/api/captcha', captchaRateLimit, (req, res) => {
   const answer = Array.from({ length: 5 }, () => captchaAlphabet[randomBytes(1)[0] % captchaAlphabet.length]).join('');
   res.set('Cache-Control', 'no-store');
   res.json({ id: createCaptchaToken(answer), image: createCaptchaImage(answer) });
 });
 
 function sendError(res, error) {
-  console.error(error);
-  const status = error.status || 500;
-  res.status(status).json({ error: status === 500 ? 'The spreadsheet service is unavailable. Check the server configuration.' : error.message });
+  const status = error.expose ? error.status : 503;
+  if (status >= 500) console.error('API request failed', { status, name: error.name, code: error.code });
+  res.status(status).json({ error: error.expose ? error.message : 'The service is temporarily unavailable. Please try again later.' });
 }
 
 function jwtSecret() {
-  if (!process.env.JWT_SECRET) {
-    const error = new Error('JWT_SECRET is not configured.');
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+    const error = new Error('JWT_SECRET must contain at least 32 characters.');
     error.status = 503;
     throw error;
   }
@@ -97,15 +165,32 @@ async function getUserByEmail(store, email) {
 }
 
 async function ensureAdmin(store) {
-  const email = (process.env.ADMIN_EMAIL || 'admin@feedbackhub.com').trim().toLowerCase();
+  const email = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
   const password = process.env.ADMIN_PASSWORD;
-  if (!password || password.length < 8) {
-    const error = new Error('Set ADMIN_PASSWORD to a value of at least 8 characters before using the API.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    const error = new Error('Set ADMIN_EMAIL to a valid administrator email before using the API.');
     error.status = 503;
     throw error;
   }
   const existing = await getUserByEmail(store, email);
-  if (existing?.record.role === 'admin') return;
+  if (existing?.record.role === 'admin') {
+    const existingHash = typeof existing.record.passwordHash === 'string' ? existing.record.passwordHash : '';
+    if (password && password.length >= 12 && (!existingHash || !(await bcrypt.compare(password, existingHash)))) {
+      await store.update('Users', existing.rowNumber, {
+        ...existing.record,
+        passwordHash: await bcrypt.hash(password, 12),
+      });
+    } else if ((!password || password.length < 12) && !weakAdminPasswordWarningLogged) {
+      console.warn('ADMIN_PASSWORD should be rotated to at least 12 characters.');
+      weakAdminPasswordWarningLogged = true;
+    }
+    return;
+  }
+  if (!password || password.length < 12) {
+    const error = new Error('Set ADMIN_PASSWORD to a value of at least 12 characters before using the API.');
+    error.status = 503;
+    throw error;
+  }
 
   const adminUser = {
     id: existing?.record.id || randomUUID(),
@@ -123,11 +208,11 @@ async function ensureAdmin(store) {
 }
 
 async function authorize(req, requiredRole) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const token = readSessionToken(req);
   if (!token) {
     const error = new Error('Please sign in to continue.');
     error.status = 401;
+    error.expose = true;
     throw error;
   }
   let claims;
@@ -136,6 +221,7 @@ async function authorize(req, requiredRole) {
   } catch {
     const error = new Error('Your session expired. Please sign in again.');
     error.status = 401;
+    error.expose = true;
     throw error;
   }
 
@@ -144,12 +230,14 @@ async function authorize(req, requiredRole) {
   if (!entry || entry.record.id !== claims.sub) {
     const error = new Error('Your account could not be found. Please sign in again.');
     error.status = 401;
+    error.expose = true;
     throw error;
   }
   const user = entry.record;
   if (requiredRole && user.role !== requiredRole) {
     const error = new Error('You do not have permission to perform this action.');
     error.status = 403;
+    error.expose = true;
     throw error;
   }
   return { store, user };
@@ -171,7 +259,12 @@ app.get('/api/session', async (req, res) => {
   }
 });
 
-app.post('/api/auth/signup', async (req, res) => {
+app.post('/api/auth/logout', (req, res) => {
+  clearSessionCookie(res);
+  res.status(204).end();
+});
+
+app.post('/api/auth/signup', signupRateLimit, async (req, res) => {
   try {
     if (!verifyCaptcha(req.body.captchaId, req.body.captchaAnswer)) {
       return res.status(400).json({ error: 'CAPTCHA is incorrect or expired. Please try a new image.' });
@@ -179,8 +272,8 @@ app.post('/api/auth/signup', async (req, res) => {
     const name = String(req.body.name || '').trim();
     const email = String(req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
-    if (name.length < 2 || name.length > 80 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8 || password.length > 128) {
-      return res.status(400).json({ error: 'Enter a name, valid email, and password between 8 and 128 characters.' });
+    if (name.length < 2 || name.length > 80 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 12 || password.length > 128) {
+      return res.status(400).json({ error: 'Enter a name, valid email, and password between 12 and 128 characters.' });
     }
     const store = await getSheetStore();
     await ensureAdmin(store);
@@ -196,19 +289,23 @@ app.post('/api/auth/signup', async (req, res) => {
       createdAt: new Date().toISOString(),
     };
     await store.append('Users', user);
-    res.status(201).json({ user: publicUser(user), token: createToken(user) });
+    setSessionCookie(res, createToken(user));
+    res.status(201).json({ user: publicUser(user) });
   } catch (error) {
     sendError(res, error);
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginRateLimit, async (req, res) => {
   try {
     if (!verifyCaptcha(req.body.captchaId, req.body.captchaAnswer)) {
       return res.status(400).json({ error: 'CAPTCHA is incorrect or expired. Please try a new image.' });
     }
     const email = String(req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
+    if (email.length > 254 || password.length > 128) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
     const store = await getSheetStore();
     await ensureAdmin(store);
     const entry = await getUserByEmail(store, email);
@@ -216,7 +313,8 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
     const user = entry.record;
-    res.json({ user: publicUser(user), token: createToken(user) });
+    setSessionCookie(res, createToken(user));
+    res.json({ user: publicUser(user) });
   } catch (error) {
     sendError(res, error);
   }
@@ -302,17 +400,25 @@ app.post('/api/migrate/local-storage', async (req, res) => {
   }
 });
 
-app.get('/api/feedback', async (req, res) => {
+app.get('/api/feedback', feedbackReadRateLimit, async (req, res) => {
   try {
-    const store = await getSheetStore();
-    const rows = await store.list('Feedback');
-    const header = req.headers.authorization || '';
-    if (!header.startsWith('Bearer ')) {
-      const publicItems = rows.map(({ record }) => ({ ...record, rating: Number(record.rating) }));
+    if (!readSessionToken(req)) {
+      const store = await getSheetStore();
+      const rows = await store.list('Feedback');
+      const publicItems = rows.map(({ record }) => ({
+        id: record.id,
+        userName: record.userName,
+        category: record.category,
+        rating: Number(record.rating),
+        message: record.message,
+        status: record.status,
+        createdAt: record.createdAt,
+      }));
       return res.json({ feedback: publicItems });
     }
 
-    const { user } = await authorize(req);
+    const { store, user } = await authorize(req);
+    const rows = await store.list('Feedback');
     const items = rows.map(({ record }) => ({ ...record, rating: Number(record.rating) }))
       .filter((item) => user.role === 'admin' || item.userId === user.id);
     res.json({ feedback: items });
@@ -321,7 +427,7 @@ app.get('/api/feedback', async (req, res) => {
   }
 });
 
-app.post('/api/feedback', async (req, res) => {
+app.post('/api/feedback', feedbackWriteRateLimit, async (req, res) => {
   try {
     const { store, user } = await authorize(req);
     const category = String(req.body.category || '');
